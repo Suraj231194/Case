@@ -1,894 +1,374 @@
 "use client";
-import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
-import {
-  AnimatePresence,
-  MotionConfig,
-  motion,
-  type Variants,
-} from "framer-motion";
-import {
-  ArrowUpRight,
-  ArrowDown,
-  ArrowRight,
-  Sparkles,
-  Layers3,
-  Fingerprint,
-  Palette,
-  X,
-  Menu,
-  Check,
-  Upload,
-} from "lucide-react";
+
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent } from "react";
+import { ArrowDown, ArrowUpRight, Check, Menu, Upload, X } from "lucide-react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import Lenis from "lenis";
+import Journey, { number } from "./Journey";
 import { steps } from "./process";
-const ThreeDScene = dynamic(() => import("./ThreeDScene"), {
-  ssr: false,
-  loading: () => (
-    <div className="scene-loading">
-      <i />
-      Preparing your experience
-    </div>
-  ),
-});
+import { ARTWORK, Photo } from "./media";
+import { CaseFace } from "./CaseArt";
+
 const designs = [
-  {
-    name: "Alpine memories",
-    category: "THE PHOTO COLLECTION",
-    className: "alpine",
-  },
-  {
-    name: "Electric daydream",
-    category: "THE COLOUR COLLECTION",
-    className: "electric",
-  },
-  {
-    name: "Less, but you",
-    category: "THE MINIMAL COLLECTION",
-    className: "minimal",
-  },
-];
-const STAGES = 8;
-/** Process progress (0–1) at which stage i has settled: camera arrived, copy shown. */
-const stageRest = (i: number) => (i + 0.55) / STAGES;
-/** Where each numbered node sits along the route-map path, as a fraction of its length. */
-const NODE_AT = [0, 0.1495, 0.2991, 0.4486, 0.5514, 0.7009, 0.8505, 1];
-const routeFill = (p: number) => {
-  const f = gsap.utils.clamp(0, STAGES - 1, p * STAGES - 0.55);
-  const i = Math.min(STAGES - 2, Math.floor(f));
-  return NODE_AT[i] + (NODE_AT[i + 1] - NODE_AT[i]) * (f - i);
-};
-const easeOut = [0.22, 1, 0.36, 1] as const;
-/** Splits a headline into masked lines for the line-by-line reveals. */
-function Lines({ text, accentFrom }: { text: string[]; accentFrom?: number }) {
-  return (
-    <>
-      {text.map((line, i) => (
-        <span
-          className={
-            "line" +
-            (accentFrom !== undefined && i >= accentFrom ? " accent" : "")
-          }
-          key={i}
-        >
-          <span className="line-inner" style={{ ["--i" as string]: i }}>
-            {line}
-          </span>
-        </span>
-      ))}
-    </>
-  );
+  { name: "Alpine memories", style: "alpine", type: "Photography", note: "Your photo, edge to edge." },
+  { name: "Electric daydream", style: "electric", type: "Colour", note: "A field of moving colour." },
+  { name: "Less, but you", style: "minimal", type: "Typography", note: "Quiet type, one line." },
+] as const;
+
+function CasePreview({ index, photo }: { index: number; photo?: string }) {
+  return <CaseFace variant={designs[index].style} photo={photo} />;
 }
+
+function tilt(event: PointerEvent<HTMLElement>) {
+  if (event.pointerType !== "mouse" || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const el = event.currentTarget;
+  const b = el.getBoundingClientRect();
+  const x = (event.clientX - b.left) / b.width;
+  const y = (event.clientY - b.top) / b.height;
+  el.style.setProperty("--rx", `${(0.5 - y) * 16}deg`);
+  el.style.setProperty("--ry", `${(x - 0.5) * 22}deg`);
+  el.style.setProperty("--mx", `${x * 100}%`);
+  el.style.setProperty("--my", `${y * 100}%`);
+}
+
+function resetTilt(event: PointerEvent<HTMLElement>) {
+  for (const p of ["--rx", "--ry", "--mx", "--my"]) event.currentTarget.style.removeProperty(p);
+}
+
+/** Primary buttons lean a little toward the pointer. */
+function magnet(event: PointerEvent<HTMLElement>) {
+  if (event.pointerType !== "mouse") return;
+  const el = event.currentTarget;
+  const b = el.getBoundingClientRect();
+  el.style.setProperty("--mx", `${((event.clientX - b.left) / b.width - 0.5) * 14}px`);
+  el.style.setProperty("--my", `${((event.clientY - b.top) / b.height - 0.5) * 10}px`);
+}
+
+function unmagnet(event: PointerEvent<HTMLElement>) {
+  event.currentTarget.style.removeProperty("--mx");
+  event.currentTarget.style.removeProperty("--my");
+}
+
+const magnetic = { onPointerMove: magnet, onPointerLeave: unmagnet, "data-magnetic": true } as const;
+
 export default function Studio() {
-  const progress = useRef({ value: 0 });
-  const heroScroll = useRef({ value: 0 });
-  const section = useRef<HTMLElement>(null);
   const lenisRef = useRef<Lenis | null>(null);
-  const activeRef = useRef(0);
-  const dirRef = useRef(1);
-  const barRef = useRef<HTMLSpanElement>(null);
-  const routeRef = useRef<SVGPathElement>(null);
-  const marqueeRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
-  const [nav, setNav] = useState<"top" | "shown" | "hidden">("top");
+  const hero = useRef<HTMLElement>(null);
+  const finale = useRef<HTMLElement>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
   const [menu, setMenu] = useState(false);
-  const [customize, setCustomize] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const [inJourney, setInJourney] = useState(false);
+  const [section, setSection] = useState("");
   const [selected, setSelected] = useState(0);
-  const [photo, setPhoto] = useState("");
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [photoUrl, setPhotoUrl] = useState("");
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (!photo) {
+      setPhotoUrl("");
+      return;
+    }
+    const url = URL.createObjectURL(photo);
+    setPhotoUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [photo]);
+
+  // Header state and the page progress line, driven by native scroll (Lenis scrolls the window too).
+  useEffect(() => {
+    let frame = 0;
+    const onScroll = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        if (bar.current) bar.current.style.transform = `scaleX(${max > 0 ? Math.min(1, window.scrollY / max) : 0})`;
+        setScrolled(window.scrollY > 40);
+      });
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  // The navigation marks the section that fills the middle of the screen.
+  useEffect(() => {
+    const ids = ["process", "designs"];
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) setSection(entry.target.id);
+        else setSection((current) => (current === entry.target.id ? "" : current));
+      });
+    }, { rootMargin: "-45% 0px -45% 0px" });
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) observer.observe(el);
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  // Section headings and cards fade up once as they enter the screen.
+  useEffect(() => {
+    const items = document.querySelectorAll<HTMLElement>("[data-rise]");
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-in");
+        observer.unobserve(entry.target);
+      });
+    }, { rootMargin: "0px 0px -12% 0px" });
+    items.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("menu-open", menu);
+    if (menu) lenisRef.current?.stop();
+    else if (!dialog.current?.open) lenisRef.current?.start();
+  }, [menu]);
+
   useEffect(() => {
     gsap.registerPlugin(ScrollTrigger);
-    const ctx = gsap.context(() => {
-      // The manufacturing scene. Writes the bar and route directly so a scroll
-      // tick only re-renders React when the stage actually changes.
-      gsap
-        .timeline({
-          scrollTrigger: {
-            trigger: section.current,
-            start: "top top",
-            end: "bottom bottom",
-            scrub: 0.5,
-            invalidateOnRefresh: true,
-          },
-          onUpdate() {
-            const p = progress.current.value;
-            const next = Math.min(STAGES - 1, Math.floor(p * STAGES));
-            if (next !== activeRef.current) {
-              dirRef.current = next > activeRef.current ? 1 : -1;
-              activeRef.current = next;
-              setActive(next);
-            }
-            if (barRef.current) barRef.current.style.transform = `scaleX(${p})`;
-            if (routeRef.current)
-              routeRef.current.style.strokeDashoffset = String(
-                1 - routeFill(p),
-              );
-          },
-        })
-        .to(progress.current, { value: 1, duration: 8, ease: "none" });
-      // Navigation: transparent at the top, hides while scrolling down and inside
-      // the pinned journey (which has its own header), returns on scroll up.
-      ScrollTrigger.create({
-        start: 0,
-        end: "max",
-        onUpdate(self) {
-          const y = self.scroll();
-          const el = section.current;
-          const inJourney =
-            !!el &&
-            y >= el.offsetTop - 2 &&
-            y < el.offsetTop + el.offsetHeight - window.innerHeight;
-          const next =
-            y < 60
-              ? "top"
-              : inJourney || self.direction === 1
-                ? "hidden"
-                : "shown";
-          setNav((prev) => (prev === next ? prev : next));
-        },
-      });
-    });
-    const mm = gsap.matchMedia();
-    mm.add("(prefers-reduced-motion: no-preference)", () => {
-      const lenis = new Lenis({ lerp: 0.085, anchors: true });
+    const media = gsap.matchMedia();
+
+    media.add("(prefers-reduced-motion: no-preference)", () => {
+      const lenis = new Lenis({ lerp: 0.085, anchors: true, wheelMultiplier: 0.9 });
       lenisRef.current = lenis;
       const raf = (time: number) => lenis.raf(time * 1000);
-      lenis.on("scroll", ScrollTrigger.update);
       gsap.ticker.add(raf);
       gsap.ticker.lagSmoothing(0);
-      // Settle on a stage once scrolling stops. Moving more than a nudge past a
-      // stage carries on to the next one in that direction; a nudge springs back.
-      let idle = 0;
-      const settle = () => {
-        const el = section.current;
-        if (!el || lenis.isStopped) return;
-        const span = el.offsetHeight - window.innerHeight;
-        const p = (lenis.scroll - el.offsetTop) / span;
-        if (p <= stageRest(0) || p >= stageRest(STAGES - 1)) return;
-        const f = p * STAGES - 0.55;
-        const base = Math.floor(f);
-        const along = f - base;
-        const i =
-          lenis.direction >= 0
-            ? along > 0.12
-              ? base + 1
-              : base
-            : along < 0.88
-              ? base
-              : base + 1;
-        const y = el.offsetTop + span * stageRest(i);
-        if (Math.abs(y - lenis.scroll) > 2)
-          lenis.scrollTo(y, {
-            duration: 0.95,
-            easing: (t) => 1 - Math.pow(1 - t, 4),
-          });
-      };
-      const onScroll = () => {
-        window.clearTimeout(idle);
-        idle = window.setTimeout(settle, 170);
-      };
-      lenis.on("scroll", onScroll);
-      // Hero exit: copy lifts and fades, the art sinks, orbits open up, and the
-      // 3D cases turn with the page.
-      gsap
-        .timeline({
-          scrollTrigger: {
-            trigger: ".hero",
-            start: "top top",
-            end: "bottom top",
-            scrub: true,
-            onUpdate: (self) => {
-              heroScroll.current.value = self.progress;
-            },
-          },
-        })
-        .to(".hero-copy", { yPercent: -22, autoAlpha: 0.1, ease: "none" }, 0)
-        .to(".hero-art", { y: 140, ease: "none" }, 0)
-        .to(".orbit-one", { rotation: -14, scale: 1.14, ease: "none" }, 0)
-        .to(".orbit-two", { rotation: -52, scale: 0.9, ease: "none" }, 0)
-        .to(".hero-bottom", { autoAlpha: 0, y: -24, duration: 0.25 }, 0);
-      // Marquee keeps drifting, follows the scroll direction, and surges with
-      // scroll speed before easing back.
-      const loop = gsap.to(marqueeRef.current, {
-        xPercent: -50,
-        duration: 36,
-        ease: "none",
-        repeat: -1,
-      });
-      loop.totalTime(loop.duration() * 100);
-      ScrollTrigger.create({
-        start: 0,
-        end: "max",
-        onUpdate(self) {
-          const boost = gsap.utils.clamp(
-            1,
-            7,
-            1 + Math.abs(self.getVelocity()) / 260,
-          );
-          const dir = self.direction;
-          gsap.to(loop, {
-            timeScale: dir * boost,
-            duration: 0.2,
-            overwrite: true,
-            onComplete: () => {
-              gsap.to(loop, {
-                timeScale: dir,
-                duration: 1.4,
-                ease: "power2.out",
-              });
-            },
-          });
-        },
-      });
-      // Headlines below the journey rise line by line as they enter.
-      gsap.utils.toArray<HTMLElement>("[data-lines]").forEach((el) => {
-        gsap.from(el.querySelectorAll(".line-inner"), {
-          yPercent: 110,
-          duration: 1.25,
-          ease: "expo.out",
-          stagger: 0.09,
-          scrollTrigger: { trigger: el, start: "top 86%", once: true },
-        });
-      });
-      // Cards and supporting copy arrive in staggered groups.
-      const items = gsap.utils.toArray<HTMLElement>("[data-reveal]");
-      items.forEach((el) => el.classList.add("reveal-pending"));
-      gsap.set(items, { autoAlpha: 0, y: 60 });
-      ScrollTrigger.batch(items, {
-        start: "top 90%",
-        once: true,
-        onEnter: (batch) =>
-          gsap.to(batch, {
-            autoAlpha: 1,
-            y: 0,
-            duration: 1.15,
-            ease: "expo.out",
-            stagger: 0.1,
-            onComplete: () => {
-              gsap.set(batch, { clearProps: "transform,opacity,visibility" });
-              batch.forEach((el) => el.classList.remove("reveal-pending"));
-            },
-          }),
-      });
-      gsap.fromTo(
-        ".cta-star",
-        { rotation: -40 },
-        {
-          rotation: 140,
-          ease: "none",
-          scrollTrigger: {
-            trigger: ".final-cta",
-            start: "top bottom",
-            end: "bottom top",
-            scrub: true,
-          },
-        },
-      );
+      lenis.on("scroll", ScrollTrigger.update);
+
+      // Hero: the photograph sinks and the case rises as the page scrolls away.
+      const h = { trigger: hero.current, start: "top top", end: "bottom top", scrub: true };
+      gsap.to(".hero-bg img", { yPercent: 16, scale: 1.18, ease: "none", scrollTrigger: h });
+      gsap.to(".hero-inner", { yPercent: -22, opacity: 0, ease: "none", scrollTrigger: h });
+      gsap.to(".hero-object", { yPercent: -34, rotate: -6, ease: "none", scrollTrigger: h });
+
+      // Finale: a framed photograph opens out to fill the screen.
+      const f = { trigger: finale.current, start: "top bottom", end: "bottom bottom", scrub: true };
+      // Scaling a rounded frame stays on the GPU; animating clip-path repaints every frame.
+      gsap.fromTo(".finale-media", { scale: 0.62 }, { scale: 1, ease: "none", scrollTrigger: f });
+      gsap.fromTo(".finale-media img", { scale: 1.3 }, { scale: 1, ease: "none", scrollTrigger: f });
+      gsap.fromTo(".finale-copy", { y: 80, opacity: 0 }, { y: 0, opacity: 1, ease: "none", scrollTrigger: { trigger: finale.current, start: "center bottom", end: "bottom bottom", scrub: true } });
+
       return () => {
-        window.clearTimeout(idle);
-        items.forEach((el) => el.classList.remove("reveal-pending"));
         gsap.ticker.remove(raf);
-        gsap.ticker.lagSmoothing(500, 33);
         lenis.destroy();
         lenisRef.current = null;
       };
     });
-    return () => {
-      mm.revert();
-      ctx.revert();
-    };
+
+    return () => media.revert();
   }, []);
-  useEffect(() => {
-    if (!customize) return;
-    const before = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    lenisRef.current?.stop();
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setCustomize(false);
-      if (e.key === "Tab") {
-        const items = Array.from(
-          document.querySelectorAll<HTMLElement>(
-            ".customizer button,.customizer input",
-          ),
-        );
-        const first = items[0],
-          last = items[items.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    };
-    document.addEventListener("keydown", handler);
-    document.querySelector<HTMLButtonElement>(".close-modal")?.focus();
-    return () => {
-      document.body.style.overflow = before;
-      lenisRef.current?.start();
-      document.removeEventListener("keydown", handler);
-    };
-  }, [customize]);
-  useEffect(
-    () => () => {
-      if (photo) URL.revokeObjectURL(photo);
-    },
-    [photo],
-  );
-  const goToStep = (i: number) => {
-    const el = section.current;
-    if (!el) return;
-    const y =
-      el.offsetTop + (el.offsetHeight - window.innerHeight) * stageRest(i);
-    if (lenisRef.current) lenisRef.current.scrollTo(y, { duration: 1.6 });
-    else window.scrollTo({ top: y, behavior: "instant" });
-  };
+
+  const onJourney = useCallback((on: boolean) => setInJourney(on), []);
+  // Stable, so the memoised film does not re-render; openStudio only uses refs and state setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const openFromJourney = useCallback(() => openStudio(), []);
+
+  function openStudio(index?: number) {
+    if (index !== undefined) {
+      setSelected(index);
+      setPhoto(null);
+    }
+    setSaved(false);
+    setMenu(false);
+    if (!dialog.current?.open) {
+      dialog.current?.showModal();
+      lenisRef.current?.stop();
+    }
+  }
+
   function download() {
-    const a = document.createElement("a");
-    a.href = photo || "/assets/alpine-cover-hd.jpg";
-    a.download = "my-case-design.jpg";
-    a.click();
+    const link = document.createElement("a");
+    link.href = photoUrl || ARTWORK;
+    link.download = photo?.name || "my-case-design.jpg";
+    link.click();
     setSaved(true);
   }
-  // Direction is read when each animation starts, so leaving a stage and
-  // entering the next both move the same way the page is scrolling.
-  const lineVariants: Variants = {
-    enter: () => ({ y: dirRef.current > 0 ? "108%" : "-108%" }),
-    center: { y: "0%", transition: { duration: 0.8, ease: easeOut } },
-    exit: () => ({
-      y: dirRef.current > 0 ? "-108%" : "108%",
-      transition: { duration: 0.32, ease: [0.55, 0, 1, 0.45] },
-    }),
-  };
-  const fadeVariants: Variants = {
-    enter: () => ({ opacity: 0, y: dirRef.current * 18 }),
-    center: { opacity: 1, y: 0, transition: { duration: 0.7, ease: easeOut } },
-    exit: () => ({
-      opacity: 0,
-      y: dirRef.current * -12,
-      transition: { duration: 0.25 },
-    }),
-  };
-  const navClass =
-    "navbar" + (menu ? " is-shown" : nav === "top" ? "" : ` is-${nav}`);
+
+  const headerClass = ["site-header", scrolled && "is-scrolled", inJourney && !menu && "is-hidden", menu && "is-open"].filter(Boolean).join(" ");
+
   return (
-    <MotionConfig reducedMotion="user">
-      <main id="top">
-        <a className="skip-link" href="#process">
-          Skip to the process
+    <>
+      <a className="skip-link" href="#process">Skip to the process</a>
+      <div className="grain" aria-hidden="true" />
+      <div className="page-progress" aria-hidden="true"><i ref={bar} /></div>
+
+      <header className={headerClass} id="top">
+        <a className="wordmark" href="#top" aria-label="Case Studio home" onClick={() => setMenu(false)}>
+          <i aria-hidden="true" /><span>Case</span><em>Studio</em>
         </a>
-        <nav className={navClass}>
-          <a href="#top" className="logo" aria-label="Case Studio home">
-            case<span>STUDIO</span>
-          </a>
-          <div className={menu ? "nav-links open" : "nav-links"}>
-            <a href="#process" onClick={() => setMenu(false)}>
-              The process
-            </a>
-            <a href="#possibilities" onClick={() => setMenu(false)}>
-              Possibilities
-            </a>
-            <a href="#why" onClick={() => setMenu(false)}>
-              Why Case Studio
-            </a>
-          </div>
-          <button className="nav-cta" onClick={() => setCustomize(true)}>
-            Make it yours <ArrowUpRight size={15} />
-          </button>
-          <button
-            className="menu-toggle"
-            aria-label="Toggle navigation"
-            aria-expanded={menu}
-            onClick={() => setMenu(!menu)}
-          >
-            {menu ? <X /> : <Menu />}
-          </button>
+        <nav className="site-nav" id="site-nav" aria-label="Main">
+          <a href="#process" aria-current={section === "process" ? "true" : undefined} onClick={() => setMenu(false)}><small>01</small>The process</a>
+          <a href="#designs" aria-current={section === "designs" ? "true" : undefined} onClick={() => setMenu(false)}><small>02</small>Designs</a>
+          <button className="btn btn-gold nav-cta" onClick={() => openStudio()}>Design your case <ArrowUpRight size={16} /></button>
         </nav>
-        <section className="hero">
-          <div className="hero-grid" />
-          <div className="hero-copy">
-            <div className="eyebrow intro" style={{ ["--d" as string]: 0 }}>
-              <span className="status-dot" /> A LITTLE YOU. EVERYWHERE.
-            </div>
-            <h1>
-              <Lines
-                text={[
-                  "Customize",
-                  "your world.",
-                  "Print your",
-                  "imagination.",
-                ]}
-                accentFrom={2}
-              />
+        <button className="btn btn-glass header-cta" onClick={() => openStudio()} {...magnetic}>Design your case <ArrowUpRight size={15} /></button>
+        <button className="round menu-toggle" aria-controls="site-nav" aria-expanded={menu} aria-label={menu ? "Close navigation" : "Open navigation"} onClick={() => setMenu(!menu)}>
+          {menu ? <X size={18} /> : <Menu size={18} />}
+        </button>
+      </header>
+
+      <main>
+        <section className="hero" ref={hero}>
+          <div className="hero-bg" aria-hidden="true">
+            <Photo name="press-open" alt="" eager />
+          </div>
+          <div className="hero-grade" aria-hidden="true" />
+          <div className="hero-inner">
+            <p className="eyebrow intro" style={{ "--d": "0.15s" } as CSSProperties}><i /> Personal phone cases, pressed by hand</p>
+            <h1 className="hero-title">
+              <span className="line"><span style={{ "--d": "0.25s" } as CSSProperties}>Made of</span></span>
+              <span className="line"><em style={{ "--d": "0.4s" } as CSSProperties}>your imagination.</em></span>
             </h1>
-            <p className="intro" style={{ ["--d" as string]: 5 }}>
-              Turn the things you love into the case you carry.
-              <br className="desktop-break" /> A personal story. A beautiful
-              process. Entirely yours.
+            <p className="hero-lede intro" style={{ "--d": "0.65s" } as CSSProperties}>
+              Turn a favourite photograph into the case you carry. Follow it from screen to shell in eight stages.
             </p>
-            <a
-              className="button dark intro"
-              style={{ ["--d" as string]: 6 }}
-              href="#process"
-            >
-              Explore the process <ArrowDown size={17} />
-            </a>
-            <div className="hero-note intro" style={{ ["--d" as string]: 7 }}>
-              <span>✳</span> Your imagination. Our canvas.
+            <div className="hero-actions intro" style={{ "--d": "0.8s" } as CSSProperties}>
+              <a className="btn btn-gold" href="#process" {...magnetic}>Begin the journey <ArrowDown size={17} /></a>
+              <button className="btn btn-glass" onClick={() => openStudio()} {...magnetic}>Open the studio <ArrowUpRight size={16} /></button>
             </div>
           </div>
-          <div className="hero-art">
-            <div className="orbit orbit-one" />
-            <div className="orbit orbit-two" />
-            <span className="art-caption">
-              DESIGNED BY YOU.
-              <br />
-              MADE FOR YOUR EVERYDAY.
-            </span>
-            <ThreeDScene hero scroll={heroScroll} />
-            <div className="floating-tag">
-              <span className="status-dot" /> One of a kind. Just like you.
+          <div className="hero-object intro" style={{ "--d": "0.5s" } as CSSProperties}>
+            <div className="hero-orbit" aria-hidden="true"><i /><i /></div>
+            <div className="tilt hero-case" onPointerMove={tilt} onPointerLeave={resetTilt}>
+              <CasePreview index={0} />
             </div>
-            <span className="vertical-label">
-              Case Studio / PERSONAL EXPRESSION SERIES — 001
-            </span>
+            <p className="hero-badge"><b>01 — 08</b> From a photo to the press</p>
           </div>
-          <div className="hero-bottom">
-            <span>SCROLL TO SEE HOW IT'S MADE</span>
-            <span className="scroll-cue" aria-hidden="true">
-              <ArrowDown size={16} />
-            </span>
-            <span>01 — 08 / FROM IDEA TO REALITY</span>
+          <div className="hero-foot" aria-hidden="true">
+            <span className="scroll-cue"><i /> Scroll</span>
+            <span>Heat · Ink · Shell</span>
           </div>
         </section>
+
         <div className="marquee" aria-hidden="true">
-          <div className="marquee-track" ref={marqueeRef}>
-            {[0, 1].map((copy) => (
-              <div className="marquee-group" key={copy}>
-                {[0, 1, 2].map((k) => (
-                  <span className="marquee-phrase" key={k}>
-                    YOUR MEMORIES. YOUR COLOURS. YOUR RULES. <span>✳</span>
-                    MADE OF YOUR IMAGINATION. <span>✳</span>
-                  </span>
+          <div className="marquee-track">
+            {[0, 1].map((r) => (
+              <div className="marquee-run" key={r}>
+                {steps.map((s, i) => (
+                  <span key={s.title}><b>{number(i)}</b>{s.title}<i>✦</i></span>
                 ))}
               </div>
             ))}
           </div>
         </div>
-        <section id="process" ref={section} className="process-scroll">
-          <div className="process-pin">
-            <div className="process-top">
-              <span className="eyebrow">THE ART OF MAKING IT YOURS</span>
-              <span className="process-counter">
-                <span className="sr-only">
-                  Step {active + 1} of {STAGES}
-                </span>
-                <span aria-hidden="true">0</span>
-                <span className="counter-roll" aria-hidden="true">
-                  <span style={{ transform: `translateY(${-active * 12.5}%)` }}>
-                    {steps.map((_, i) => (
-                      <span key={i}>{i + 1}</span>
-                    ))}
-                  </span>
-                </span>
-                <span className="counter-total" aria-hidden="true">
-                  {" "}
-                  / 08
-                </span>
-              </span>
-              <span className="process-progress" aria-hidden="true">
-                <span ref={barRef} />
-              </span>
-            </div>
-            <div className="process-copy" aria-live="polite">
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={active}
-                  initial="enter"
-                  animate="center"
-                  exit="exit"
-                  variants={{
-                    center: { transition: { staggerChildren: 0.07 } },
-                    exit: { transition: { staggerChildren: 0.03 } },
-                  }}
-                >
-                  <motion.span className="eyebrow teal" variants={fadeVariants}>
-                    {steps[active].detail}
-                  </motion.span>
-                  <h2>
-                    {steps[active].headline.split("\n").map((line, i) => (
-                      <span className="line" key={i}>
-                        <motion.span
-                          className="line-inner"
-                          variants={lineVariants}
-                        >
-                          {line}
-                        </motion.span>
-                      </span>
-                    ))}
-                  </h2>
-                  <motion.p variants={fadeVariants}>
-                    {steps[active].description}
-                  </motion.p>
-                  <motion.div className="stage-tag" variants={fadeVariants}>
-                    <span /> {steps[active].title}
-                  </motion.div>
-                </motion.div>
-              </AnimatePresence>
-            </div>
-            <div className="process-scene">
-              <ThreeDScene progress={progress} />
-            </div>
-            <div className="scene-caption">
-              <span className="crosshair">+</span>
-              <span className="caption-text" key={active}>
-                {steps[active].tag}
-              </span>
-              <span className="crosshair">+</span>
-            </div>
-            <div className="process-bottom">
-              <div className="path-map">
-                <svg
-                  viewBox="0 0 500 90"
-                  role="img"
-                  aria-label="Eight-step S-shaped manufacturing path"
-                >
-                  <path
-                    d="M25 20H445C492 20 492 70 445 70H25"
-                    fill="none"
-                    stroke="#c5e8e4"
-                    strokeWidth="3"
-                  />
-                  <path
-                    ref={routeRef}
-                    d="M25 20H445C492 20 492 70 445 70H25"
-                    fill="none"
-                    stroke="#08bfc0"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    pathLength="1"
-                    strokeDasharray="1"
-                    strokeDashoffset="1"
-                  />
-                  {steps.map((step, i) => {
-                    const x = i < 4 ? 25 + i * 140 : 445 - (i - 4) * 140;
-                    const y = i < 4 ? 20 : 70;
-                    return (
-                      <g
-                        key={i}
-                        className={
-                          "map-step" + (i === active ? " current" : "")
-                        }
-                        role="button"
-                        tabIndex={0}
-                        aria-label={`Go to step ${i + 1}: ${step.title}`}
-                        aria-current={i === active ? "step" : undefined}
-                        onClick={() => goToStep(i)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            goToStep(i);
-                          }
-                        }}
-                      >
-                        {i === active && (
-                          <circle className="map-pulse" cx={x} cy={y} r="12" />
-                        )}
-                        <circle
-                          cx={x}
-                          cy={y}
-                          r="12"
-                          fill={i <= active ? "#08bfc0" : "#e5f5f2"}
-                        />
-                        <text
-                          x={x}
-                          y={y + 4}
-                          textAnchor="middle"
-                          fill={i <= active ? "white" : "#667c79"}
-                          fontSize="11"
-                        >
-                          {i + 1}
-                        </text>
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-              <span className="scroll-instruction">
-                {active === STAGES - 1 ? "CONTINUE" : "KEEP SCROLLING"}
-                <br />
-                <span className="scroll-cue">
-                  <ArrowDown size={15} />
-                </span>
-              </span>
-              <a href="#why" className="skip-process">
-                Skip the journey <ArrowUpRight size={13} />
-              </a>
-            </div>
+
+        <div className="tone tone-in" aria-hidden="true" />
+        <Journey lenis={lenisRef} onDesign={openFromJourney} onActiveChange={onJourney} />
+        <div className="tone tone-out" aria-hidden="true" />
+
+        <section className="library shell" id="designs" aria-labelledby="designs-title">
+          <div className="section-head" data-rise>
+            <p className="eyebrow"><i /> Design library</p>
+            <h2 id="designs-title">Find your <em>starting point.</em></h2>
+            <p>Choose a design to preview on your case, or upload a photograph of your own.</p>
           </div>
-        </section>
-        <section className="features section" id="why">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow teal" data-reveal>
-                THOUGHTFULLY MADE. PERSONALLY YOURS.
-              </span>
-              <h2 data-lines>
-                <Lines text={["More than a case.", "A little piece of you."]} />
-              </h2>
-            </div>
-            <p data-reveal>
-              From the first spark to the final finish,
-              <br />
-              every step has a purpose.
-            </p>
-          </div>
-          <div className="feature-grid">
-            {[
-              {
-                icon: Palette,
-                title: "Your creativity, unfiltered.",
-                text: "A favourite photo. An unexpected colour. A design that could only be yours.",
-              },
-              {
-                icon: Layers3,
-                title: "A process with purpose.",
-                text: "Eight connected stages bring your idea from the screen into your hands.",
-              },
-              {
-                icon: Fingerprint,
-                title: "Personal in every detail.",
-                text: "Your composition wraps an everyday essential in something meaningful.",
-              },
-              {
-                icon: Sparkles,
-                title: "Made to make you smile.",
-                text: "Keep a little reminder of your favourite people, places, and moments close.",
-              },
-            ].map((f, i) => (
-              <article className="feature" key={f.title} data-reveal>
-                <span className="feature-number">0{i + 1}</span>
-                <div className="feature-icon">
-                  <f.icon size={30} strokeWidth={1.3} />
-                </div>
-                <h3>{f.title}</h3>
-                <p>{f.text}</p>
-              </article>
-            ))}
-          </div>
-        </section>
-        <section className="gallery section" id="possibilities">
-          <div className="section-heading">
-            <div>
-              <span className="eyebrow teal" data-reveal>
-                NO TWO STORIES ARE THE SAME
-              </span>
-              <h2 data-lines>
-                <span className="line">
-                  <span className="line-inner">A case for</span>
-                </span>
-                <span className="line">
-                  <span className="line-inner">
-                    <em>every kind of you.</em>
-                  </span>
-                </span>
-              </h2>
-            </div>
-            <button
-              className="text-button"
-              data-reveal
-              onClick={() => setCustomize(true)}
-            >
-              Find your canvas <ArrowUpRight size={18} />
-            </button>
-          </div>
-          <div className="gallery-grid">
+          <div className="library-grid">
             {designs.map((d, i) => (
-              <button
-                className={"product-card " + d.className}
-                key={d.name}
-                data-reveal
-                onClick={() => {
-                  setSelected(i);
-                  setCustomize(true);
-                  setSaved(false);
-                }}
-              >
-                <div className="product-card-top">
-                  <span>0{i + 1} / EXPRESSION SERIES</span>
-                  <ArrowUpRight size={19} />
-                </div>
-                <div className={"css-case " + d.className}>
-                  <div className="camera-hole" />
-                  {i === 2 && (
-                    <span>
-                      less,
-                      <br />
-                      <i>but me.</i>
-                    </span>
-                  )}
-                </div>
-                <div className="product-card-bottom">
-                  <span>{d.category}</span>
-                  <h3>{d.name}</h3>
-                </div>
+              <button key={d.name} className={"design-card tilt " + d.style} onClick={() => openStudio(i)} onPointerMove={tilt} onPointerLeave={resetTilt} data-rise style={{ "--i": i } as CSSProperties}>
+                <span className="design-glare" aria-hidden="true" />
+                <span className="design-type">{String(i + 1).padStart(2, "0")} · {d.type}</span>
+                <CasePreview index={i} />
+                <span className="design-name">{d.name}<ArrowUpRight size={20} /></span>
+                <span className="design-note">{d.note}</span>
               </button>
             ))}
           </div>
         </section>
-        <section className="final-cta">
-          <span className="eyebrow" data-reveal>
-            LET'S MAKE SOMETHING PERSONAL
-          </span>
-          <h2 data-lines>
-            <Lines
-              text={["Your design.", "Your style.", "Your phone case."]}
-              accentFrom={2}
-            />
-          </h2>
-          <button
-            className="button light"
-            data-reveal
-            onClick={() => setCustomize(true)}
-          >
-            Start customizing <ArrowUpRight size={19} />
-          </button>
-          <span className="cta-star" aria-hidden="true">
-            ✳
-          </span>
-          <div className="cta-bottom">
-            <span>FROM YOUR IMAGINATION, INTO YOUR HANDS.</span>
-            <span>MADE YOUR WAY.</span>
+
+        <section className="finale" ref={finale} aria-labelledby="finale-title">
+          <div className="finale-pin">
+            <div className="finale-media"><Photo name="press-plate" alt="The turquoise heat press with its clear lid raised" /></div>
+            <div className="finale-shade" aria-hidden="true" />
+            <div className="finale-copy">
+              <p className="eyebrow"><i /> Your turn</p>
+              <h2 id="finale-title">Put a memory<br /><em>in your pocket.</em></h2>
+              <button className="btn btn-gold" onClick={() => openStudio()} {...magnetic}>Open the design studio <ArrowUpRight size={18} /></button>
+            </div>
           </div>
         </section>
-        <footer>
-          <a className="logo" href="#top">
-            case<span>STUDIO</span>
-          </a>
-          <p>Made of your imagination.</p>
-          <div>
-            <a href="#process">The process</a>
-            <a href="#possibilities">Possibilities</a>
-            <button onClick={() => setCustomize(true)}>
-              Design studio <ArrowUpRight size={13} />
-            </button>
-          </div>
-          <span>
-            © {new Date().getFullYear()} Case Studio · Concept experience
-          </span>
-        </footer>
-        {customize && (
-          <div
-            className="modal-backdrop"
-            data-lenis-prevent
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setCustomize(false);
-            }}
-          >
-            <section
-              className="customizer"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="customizer-title"
-            >
-              <button
-                className="close-modal"
-                aria-label="Close design studio"
-                onClick={() => setCustomize(false)}
-              >
-                <X />
-              </button>
-              <div
-                className={"customizer-preview " + designs[selected].className}
-              >
-                <div
-                  className={"css-case " + designs[selected].className}
-                  style={
-                    photo
-                      ? {
-                          backgroundImage: `url("${photo}")`,
-                          backgroundSize: "cover",
-                          backgroundPosition: "center",
-                        }
-                      : undefined
-                  }
-                >
-                  <div className="camera-hole" />
-                  {selected === 2 && !photo && (
-                    <span>
-                      less,
-                      <br />
-                      <i>but me.</i>
-                    </span>
-                  )}
-                </div>
-                <span>YOUR EVERYDAY. REIMAGINED.</span>
-              </div>
-              <div className="customizer-content">
-                <span className="eyebrow teal">YOUR DESIGN STUDIO</span>
-                <h2 id="customizer-title">
-                  Make room
-                  <br />
-                  for your story.
-                </h2>
-                <p>
-                  Choose a starting point or upload your own photo to preview
-                  your case. This is a design preview; no order is placed.
-                </p>
-                <div className="design-options">
-                  {designs.map((d, i) => (
-                    <button
-                      key={d.name}
-                      className={selected === i ? "selected" : ""}
-                      onClick={() => {
-                        setSelected(i);
-                        setPhoto("");
-                        setSaved(false);
-                      }}
-                    >
-                      {d.name}
-                      {selected === i && <Check size={14} />}
-                    </button>
-                  ))}
-                </div>
-                <label className="upload-label">
-                  <Upload size={17} /> Upload your photo
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        setPhoto(URL.createObjectURL(file));
-                        setSaved(false);
-                      }
-                    }}
-                  />
-                </label>
-                <button
-                  className="button dark"
-                  disabled={selected !== 0 && !photo}
-                  onClick={download}
-                >
-                  {saved
-                    ? "Artwork saved"
-                    : selected !== 0 && !photo
-                      ? "Upload a photo to save artwork"
-                      : "Save your artwork"}
-                  {saved ? <Check size={16} /> : <ArrowRight size={16} />}
-                </button>
-                <small>
-                  Photos stay in your browser. Save downloads the original photo
-                  artwork.
-                </small>
-              </div>
-            </section>
-          </div>
-        )}
       </main>
-    </MotionConfig>
+
+      <footer className="site-footer">
+        <div className="footer-top shell" data-rise>
+          <p>From a photograph to a pressed, personal case, in eight stages.</p>
+          <nav aria-label="Footer">
+            <a href="#process">The process</a>
+            <a href="#designs">Designs</a>
+            <button onClick={() => openStudio()}>Design studio <ArrowUpRight size={14} /></button>
+          </nav>
+        </div>
+        <a className="footer-mark" href="#top" aria-label="Back to top">Case <em>Studio</em></a>
+        <div className="footer-base shell">
+          <span>Made of your imagination</span>
+          <a href="#top">Back to top ↑</a>
+        </div>
+      </footer>
+
+      <dialog
+        ref={dialog}
+        className="customizer"
+        aria-labelledby="customizer-title"
+        data-lenis-prevent
+        onClose={() => { if (!menu) lenisRef.current?.start(); }}
+        onClick={(event) => { if (event.target === event.currentTarget) dialog.current?.close(); }}
+      >
+        <div className="dialog-grid">
+          <div className={"dialog-preview " + designs[selected].style}>
+            <div className="tilt dialog-case" onPointerMove={tilt} onPointerLeave={resetTilt}>
+              <CasePreview index={selected} photo={photoUrl} />
+            </div>
+            <span className="dialog-caption">Live preview · {photo ? "Your photo" : designs[selected].name}</span>
+          </div>
+          <div className="dialog-content">
+            <button className="round close-dialog" aria-label="Close design studio" onClick={() => dialog.current?.close()} autoFocus><X size={18} /></button>
+            <p className="eyebrow"><i /> Design studio</p>
+            <h2 id="customizer-title">Make it <em>personal.</em></h2>
+            <p className="dialog-lede">Pick a design or upload a photo to preview it on your case.</p>
+            <div className="design-options" role="group" aria-label="Choose a design">
+              {designs.map((d, i) => (
+                <button
+                  key={d.name}
+                  aria-pressed={selected === i && !photo}
+                  onClick={() => { setSelected(i); setPhoto(null); setSaved(false); }}
+                >
+                  <span className={"swatch " + d.style} aria-hidden="true" />
+                  <span>{d.name}<small>{d.type}</small></span>
+                  {selected === i && !photo && <Check size={16} />}
+                </button>
+              ))}
+            </div>
+            <label className="upload">
+              <Upload size={17} /> {photo ? "Replace photo" : "Upload a photo"}
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file) { setPhoto(file); setSaved(false); }
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
+            {photo && <p className="photo-name">{photo.name}</p>}
+            <button className="btn btn-gold save" disabled={!photoUrl && (selected !== 0 || !!photo)} onClick={download}>
+              {saved ? "Artwork saved" : "Save artwork"} {saved ? <Check size={16} /> : <ArrowDown size={16} />}
+            </button>
+            <small className="dialog-note">
+              {selected !== 0 && !photo ? "Upload a photo to enable downloads for this design." : "Photos stay in your browser. The download contains the original image."}
+            </small>
+          </div>
+        </div>
+      </dialog>
+    </>
   );
 }

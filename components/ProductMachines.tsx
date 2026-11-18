@@ -107,88 +107,72 @@ function Label({
   );
 }
 
-/** The actual Epson product photograph, with an independently animated print. */
-export function PhotographicPrinter({ progress }: { progress?: Progress }) {
-  const product = useTexture("/assets/l8058-product-source.png");
+/**
+ * The workshop's sublimation printer, modelled on the supplied photographs: a charcoal
+ * matte body, a ridged rear paper support propped on its arm, and a front output tray.
+ * The printed sheet feeds out over the tray while the artwork appears on it.
+ */
+export function SublimationPrinter({ progress }: { progress?: Progress }) {
   const artwork = useTexture("/assets/alpine-cover-hd.jpg");
-  const ink = useRef<THREE.MeshBasicMaterial>(null);
+  const sheet = useRef<THREE.Group>(null);
+  const ink = useRef<THREE.MeshStandardMaterial>(null);
+  const led = useRef<THREE.MeshBasicMaterial>(null);
   useEffect(() => {
-    product.colorSpace = THREE.SRGBColorSpace;
-    product.needsUpdate = true;
-  }, [product]);
-  const photoGeometry = useMemo(() => {
-    const g = new THREE.PlaneGeometry(4.25, (4.25 * 350) / 570);
-    const uv = g.attributes.uv;
-    for (let i = 0; i < uv.count; i++)
-      uv.setXY(
-        i,
-        (40 + uv.getX(i) * 570) / 650,
-        1 - (500 - uv.getY(i) * 350) / 650,
-      );
-    return g;
-  }, []);
-  const sheetGeometry = useMemo(() => {
-    // Match the output sheet's photographed perspective, not an unrelated overlay.
-    const points = [
-      [163, 355],
-      [428, 355],
-      [461, 433],
-      [137, 433],
-    ];
-    const vertices = points.flatMap(([x, y]) => [
-      ((x - 325) / 570) * 4.25,
-      ((325 - y) / 570) * 4.25,
-      0.018,
-    ]);
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
-    g.setAttribute(
-      "uv",
-      new THREE.Float32BufferAttribute([0, 1, 1, 1, 1, 0, 0, 0], 2),
-    );
-    g.setIndex([0, 3, 2, 0, 2, 1]);
-    g.computeVertexNormals();
-    return g;
-  }, []);
-  useEffect(
-    () => () => {
-      photoGeometry.dispose();
-      sheetGeometry.dispose();
-    },
-    [photoGeometry, sheetGeometry],
-  );
-  useFrame(() => {
-    if (ink.current)
-      ink.current.opacity = THREE.MathUtils.smoothstep(
-        (progress?.current.value ?? 0.34) * 8 - 2,
-        0.22,
-        0.57,
-      );
+    artwork.colorSpace = THREE.SRGBColorSpace;
+    artwork.needsUpdate = true;
+  }, [artwork]);
+  useFrame(({ clock }) => {
+    const p = THREE.MathUtils.clamp((progress?.current.value ?? 0.34) * 8 - 2, 0, 1);
+    const feed = THREE.MathUtils.smoothstep(p, 0.12, 0.8);
+    if (sheet.current) sheet.current.position.z = 0.15 + feed * 1.05;
+    if (ink.current) ink.current.opacity = THREE.MathUtils.smoothstep(p, 0.25, 0.85);
+    if (led.current) led.current.color.set(feed > 0 && feed < 1 && Math.sin(clock.elapsedTime * 8) > 0 ? "#9ff0c4" : "#3d6b55");
   });
+  const body = "#30363a";
+  const trim = "#24292c";
   return (
-    <group rotation={[0, -0.08, 0]} position={[0, -0.05, 0]}>
-      <mesh geometry={photoGeometry}>
-        <meshBasicMaterial
-          map={product}
-          transparent
-          alphaTest={0.025}
-          toneMapped={false}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
-      <group position={[0, 0, 0]}>
-        <mesh geometry={sheetGeometry}>
-          <meshBasicMaterial color="#fcfcf8" side={THREE.DoubleSide} />
+    <group rotation={[0.38, -0.55, 0]} position={[0, -0.25, 0]} scale={0.92}>
+      {/* Main body, top cover and a recessed output slot. */}
+      <Part size={[3.5, 1.05, 2.4]} at={[0, 0, 0]} color={body} radius={0.16} metalness={0.1} roughness={0.72} />
+      <Part size={[3.36, 0.14, 1.7]} at={[0, 0.56, -0.28]} color="#383f43" radius={0.07} metalness={0.1} roughness={0.6} />
+      <Part size={[3.42, 0.03, 0.04]} at={[0, 0.1, 1.205]} color="#1b1f21" radius={0.01} metalness={0.2} roughness={0.5} />
+      <Part size={[2.3, 0.1, 0.06]} at={[0, -0.06, 1.2]} color="#0b0d0e" radius={0.03} metalness={0.1} roughness={0.8} />
+      {/* Front output tray. */}
+      <Part size={[2.1, 0.05, 1.3]} at={[0, -0.27, 1.75]} color={trim} radius={0.03} metalness={0.15} roughness={0.55} />
+      <Part size={[2.1, 0.05, 0.05]} at={[0, -0.27, 2.38]} color={trim} radius={0.02} metalness={0.15} roughness={0.55} />
+      {/* Rear paper support, ridged, propped back on a small arm. */}
+      <group position={[0, 0.62, -1.02]} rotation={[-0.38, 0, 0]}>
+        <Part size={[2.5, 1.55, 0.06]} at={[0, 0.78, 0]} color={trim} radius={0.03} metalness={0.1} roughness={0.65} />
+        {Array.from({ length: 11 }, (_, i) => (
+          <Part key={i} size={[0.025, 1.35, 0.02]} at={[-1.0 + i * 0.2, 0.8, 0.035]} color="#2d3337" radius={0.008} metalness={0.1} roughness={0.6} />
+        ))}
+        {/* A blank sheet waiting in the rear feed. */}
+        <mesh position={[0, 0.82, 0.07]}>
+          <planeGeometry args={[1.7, 1.3]} />
+          <meshStandardMaterial color="#f7f6f2" roughness={0.85} />
         </mesh>
-        <mesh geometry={sheetGeometry} position={[0, 0, 0.002]}>
-          <meshBasicMaterial
-            ref={ink}
-            map={artwork}
-            transparent
-            opacity={0}
-            toneMapped={false}
-            side={THREE.DoubleSide}
-          />
+      </group>
+      <Part size={[0.05, 0.62, 0.05]} at={[0.95, 0.88, -0.72]} color="#1c2023" radius={0.015} metalness={0.3} roughness={0.5} />
+      {/* Control buttons and status light, front left of the top. */}
+      {[-1.42, -1.22, -1.02].map((x) => (
+        <mesh key={x} position={[x, 0.53, 0.85]} rotation={[0, 0, 0]}>
+          <cylinderGeometry args={[0.055, 0.055, 0.03, 20]} />
+          <meshStandardMaterial color="#454c51" roughness={0.4} metalness={0.3} />
+        </mesh>
+      ))}
+      <mesh position={[-0.8, 0.53, 0.85]}>
+        <boxGeometry args={[0.07, 0.02, 0.04]} />
+        <meshBasicMaterial ref={led} color="#3d6b55" toneMapped={false} />
+      </mesh>
+      {/* The printed sheet slides out over the tray as the artwork appears. */}
+      <group ref={sheet} position={[0, -0.215, 0.15]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0.75]}>
+          <planeGeometry args={[1.62, 1.5]} />
+          <meshStandardMaterial color="#fbfaf6" roughness={0.8} />
+        </mesh>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0.75]}>
+          <planeGeometry args={[1.42, 1.32]} />
+          <meshStandardMaterial ref={ink} map={artwork} transparent opacity={0} roughness={0.6} />
         </mesh>
       </group>
     </group>
